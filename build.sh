@@ -1,2 +1,2 @@
 #!/bin/bash
-docker build -t quay.io/lukemarsden/axolotl:v0.0.1 -f docker/Dockerfile .
+docker build -t zorlin/axolotl:v0.0.5 -f docker/Dockerfile .
