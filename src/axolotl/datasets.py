@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import torch
 from datasets import Dataset, IterableDataset
@@ -24,20 +24,30 @@ class TokenizedPromptDataset(Dataset):
         Args:
             prompt_tokenizer (PromptTokenizingStrategy): The prompt tokenizing method for processing the data.
             dataset (dataset.Dataset): Dataset with text files.
+            process_count (int): Number of processes to use for tokenizing.
+            keep_in_memory (bool): Whether to keep the tokenized dataset in memory.
     """
 
     def __init__(  # pylint: disable=super-init-not-called
         self,
         prompt_tokenizer: PromptTokenizingStrategy,
-        dataset: IterableDataset,
+        dataset: Dataset,
+        process_count: Optional[int] = None,
+        keep_in_memory: Optional[bool] = False,
         **kwargs,
     ):
         self.prompt_tokenizer = prompt_tokenizer
-        super().__init__(self.process(dataset).data, **kwargs)
+        self.process_count = process_count
+        self.keep_in_memory = keep_in_memory
+        super().__init__(
+            self.process(dataset).data,
+            **kwargs,
+        )
 
     def process(self, dataset):
         features = dataset.features.keys()
-        num_proc = min(64, os.cpu_count())
+        num_proc = min(64, self.process_count if self.process_count else os.cpu_count())
+
         map_kwargs = {}
         if self.prompt_tokenizer.supports_batched:
             map_kwargs["batched"] = True
@@ -46,6 +56,8 @@ class TokenizedPromptDataset(Dataset):
             self.prompt_tokenizer.tokenize_prompt,
             num_proc=num_proc,
             remove_columns=features,
+            keep_in_memory=self.keep_in_memory,
+            desc="Tokenizing Prompts",
             **map_kwargs,
         )
 

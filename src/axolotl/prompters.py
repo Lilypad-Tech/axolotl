@@ -4,10 +4,12 @@ import logging
 from enum import Enum
 from typing import Generator, Optional, Union
 
+from colorama import Fore
 from fastchat.conversation import Conversation, get_conv_template
 
 LOG = logging.getLogger("axolotl")
 IGNORE_TOKEN_ID = -100
+REPR_TEMPLATE = "\n<start>\n" + Fore.CYAN + "{full_prompt}" + Fore.RESET + "\n<end>\n"
 
 
 class PromptStyle(Enum):
@@ -20,13 +22,19 @@ class PromptStyle(Enum):
     CHATML = "chatml"
 
 
-class AlpacaPrompter:
+class Prompter:
+    """
+    Base prompter class for all prompters
+    """
+
+
+class AlpacaPrompter(Prompter):
     """
     Base class for alpaca prompters
     """
 
-    system_prompt = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n"
-    system_no_input_prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n"
+    system_prompt = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
+    system_no_input_prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
     system_format: str = "{system}"
     turn_format: str
     turn_no_input_format: str
@@ -43,7 +51,7 @@ class AlpacaPrompter:
             self.turn_no_input_format = (
                 "### Instruction:\n{instruction}\n\n### Response:\n"
             )
-            self.system_format = "### System:\n{system}\n\n"
+            self.system_format = "{system}\n\n"
         if self.prompt_style == PromptStyle.CHAT.value:
             self.turn_format = "USER: {instruction}\n{input}\nASSISTANT:"
             self.turn_no_input_format = "USER: {instruction}\nASSISTANT:"
@@ -55,29 +63,38 @@ class AlpacaPrompter:
             )
             self.system_format = "<|im_start|>system\n{system}<|im_end|>\n"
 
+    def _build_result(self, instruction, input_text, output):
+        # returns the full prompt from instruction and optional input
+        # if a label (=response, =output) is provided, it's also appended.
+        if input_text:
+            res = (
+                self.system_format.format(system=self.system_prompt)
+                if self.system_prompt
+                else ""
+            ) + self.turn_format.format(instruction=instruction, input=input_text)
+        else:
+            res = (
+                self.system_format.format(system=self.system_no_input_prompt)
+                if self.system_no_input_prompt
+                else ""
+            ) + self.turn_no_input_format.format(instruction=instruction)
+        if output:
+            res = f"{res}{output}"
+
+        return res
+
     def build_prompt(
         self,
         instruction: str,
         input: Union[None, str] = None,  # pylint: disable=redefined-builtin
         output: Union[None, str] = None,
     ) -> Generator[str, None, None]:
-        # returns the full prompt from instruction and optional input
-        # if a label (=response, =output) is provided, it's also appended.
-        if input:
-            res = (
-                self.system_format.format(system=self.system_prompt)
-                if self.system_prompt
-                else ""
-            ) + self.turn_format.format(instruction=instruction, input=input)
-        else:
-            res = (
-                self.system_format.format(system=self.system_no_input_prompt)
-                if self.system_prompt
-                else ""
-            ) + self.turn_no_input_format.format(instruction=instruction)
-        if output:
-            res = f"{res}{output}"
-        yield res
+        yield self._build_result(instruction, input, output)
+
+    def __repr__(self) -> str:
+        return REPR_TEMPLATE.format(
+            full_prompt=self._build_result("{instruction}", "{input}", "{output}")
+        )
 
 
 class UnpromptedPrompter(AlpacaPrompter):
@@ -148,7 +165,7 @@ class NomicGPT4AllPrompter(AlpacaPrompter):
     """
 
 
-class ReflectAlpacaPrompter:
+class ReflectAlpacaPrompter(Prompter):
     """
     Prompter for ReflectAlpaca
     """
@@ -191,14 +208,14 @@ class ReflectAlpacaPrompter:
             )
             self.response_split = "ASSISTANT:"
 
-    def build_prompt(
+    def _build_result(
         self,
         instruction: str,
         input: Union[None, str] = None,  # pylint: disable=redefined-builtin
         output: Union[None, str] = None,
         reflection: Union[None, str] = None,
         corrected: Union[None, str] = None,
-    ) -> Generator[str, None, None]:
+    ):
         # returns the full prompt from instruction and optional input
         # if a label (=response, =output) is provided, it's also appended.
         if input:
@@ -212,21 +229,54 @@ class ReflectAlpacaPrompter:
                 corrected=corrected,
             )
             res = f"{res}{label}"
-        yield res
+
+        return res
+
+    def build_prompt(
+        self,
+        instruction: str,
+        input: Union[None, str] = None,  # pylint: disable=redefined-builtin
+        output: Union[None, str] = None,
+        reflection: Union[None, str] = None,
+        corrected: Union[None, str] = None,
+    ) -> Generator[str, None, None]:
+        # pylint: disable=duplicate-code
+        yield self._build_result(
+            instruction,
+            input,
+            output,
+            reflection,
+            corrected,
+        )
+
+    def __repr__(self) -> str:
+        return REPR_TEMPLATE.format(
+            full_prompt=self._build_result("{instruction}", "{input}", "{output}")
+        )
 
 
 SHAREGPT_ASSERTION_FAILED_ROLE = (
     "Role did not alternate between turns (gpt and human). Please check your data."
 )
 
+CONVERSATION_ROLE_FORMAT = {
+    "chatml": "<|im_start|>{ROLE}",
+    "zephyr": "<|{ROLE}|>",
+    "vicuna_v1.1": "{ROLE}",
+}
 
-class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
+
+class ShareGPTPrompter(Prompter):  # pylint: disable=too-few-public-methods
     """
     A prompter that generates prompts for the ShareGPT
     """
 
     role_key_human = "human"
     role_key_model = "gpt"
+    # Optional, only used for tool usage datasets.
+    role_key_tool: Optional[str] = None
+    # Optional, role input/output mapping
+    roles: Optional[dict] = None
 
     def __init__(
         self,
@@ -234,6 +284,8 @@ class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
         conversation: Optional[Union[str, Conversation]] = None,
         role_key_human: Optional[str] = None,
         role_key_model: Optional[str] = None,
+        role_key_tool: Optional[str] = None,
+        roles: Optional[dict] = None,
     ):
         if conversation:
             if isinstance(conversation, Conversation):
@@ -246,8 +298,12 @@ class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
             self.role_key_human = role_key_human
         if role_key_model:
             self.role_key_model = role_key_model
+        if role_key_tool:
+            self.role_key_tool = role_key_tool
+        if roles:
+            self.roles = roles
 
-    def build_prompt(self, source) -> Generator[str, None, None]:
+    def _build_result(self, source):
         if len(source) < 2:
             # If there isn't a back and forth conversation, ignore it
             # also happens on the data splitting leaving empty conversations
@@ -263,6 +319,8 @@ class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
             source.pop(0)
 
         roles = {self.role_key_human: conv.roles[0], self.role_key_model: conv.roles[1]}
+        if self.role_key_tool:
+            roles[self.role_key_tool] = conv.roles[2]
 
         try:
             # Apply prompt templates
@@ -275,17 +333,38 @@ class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
 
         conv.messages = []
         for _, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            if len(conv.messages) > 0 and (
-                (role == conv.messages[-1][0]) or (role not in conv.roles)
-            ):
+            from_role = sentence["from"]
+            if from_role in roles:
+                role = roles[from_role]
+            else:
+                if self._conversation.name not in CONVERSATION_ROLE_FORMAT:
+                    raise NotImplementedError(
+                        f"Role ({role}) not in default roles, and {self._conversation.name} does not support role remapping yet."
+                        "Please help us by creating an Issue to add support for this conversation type."
+                    )
+
+                role = CONVERSATION_ROLE_FORMAT[self._conversation.name].format(
+                    ROLE=from_role
+                )
+
+            if len(conv.messages) > 0 and ((role == conv.messages[-1][0])):
                 LOG.warning(f"{SHAREGPT_ASSERTION_FAILED_ROLE}: {sentence}")
+
             conv.append_message(role, sentence["value"])
 
-        for part in conv.get_turns():
+        return conv.get_turns()
+
+    def build_prompt(self, source) -> Generator[str, None, None]:
+        turns = self._build_result(source)
+
+        for part in turns:
             if part[0] and not part[1]:
                 LOG.warning(f"role with empty message: {part[0]}")
             yield part
+
+    def __repr__(self) -> str:
+        turns = self._build_result([{"from": "{from}", "value": "{value}"}])
+        return "\n".join([REPR_TEMPLATE.format(full_prompt=part) for part in turns])
 
 
 class ShareGPTPrompterV2(ShareGPTPrompter):
@@ -298,9 +377,23 @@ class ShareGPTPrompterV2(ShareGPTPrompter):
         conversation: Optional[Union[str, Conversation]] = None,
         role_key_human: Optional[str] = None,
         role_key_model: Optional[str] = None,
+        roles: Optional[dict] = None,
     ):
         super().__init__(
             conversation=conversation,
             role_key_human=role_key_human,
             role_key_model=role_key_model,
+            roles=roles,
         )
+
+
+class UnsupportedPrompter(Prompter):
+    """
+    A dummy class for custom prompters
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    def __repr__(self):
+        return "Pre-tokenized or custom dataset types are unsupported for logging"

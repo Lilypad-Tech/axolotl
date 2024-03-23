@@ -1,12 +1,15 @@
 """Module for testing prompt tokenizers."""
+
 import json
 import logging
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
 import pytest
-from transformers import AutoTokenizer, LlamaTokenizer
+from datasets import load_dataset
+from transformers import AddedToken, AutoTokenizer, LlamaTokenizer
 
 from axolotl.prompt_strategies.alpaca_chat import NoSystemPrompter
 from axolotl.prompt_strategies.alpaca_w_system import (
@@ -17,13 +20,60 @@ from axolotl.prompt_strategies.llama2_chat import (
     Llama2ChatPrompter,
     LLama2ChatTokenizingStrategy,
 )
+from axolotl.prompt_strategies.orpo.chat_template import load
+from axolotl.prompt_strategies.sharegpt import GlaiveShareGPTPromptTokenizingStrategy
 from axolotl.prompt_tokenizers import (
     AlpacaPromptTokenizingStrategy,
     ShareGPTPromptTokenizingStrategy,
 )
 from axolotl.prompters import AlpacaPrompter, PromptStyle, ShareGPTPrompterV2
+from axolotl.utils.dict import DictDefault
 
 LOG = logging.getLogger("axolotl")
+
+test_data = {
+    "multi_turn_sys": {
+        "conversations": [
+            {"from": "system", "value": "lorem"},
+            {"from": "human", "value": "abc"},
+            {"from": "gpt", "value": "ipsum"},
+            {"from": "human", "value": "123"},
+            {"from": "gpt", "value": "sit"},
+        ]
+    },
+    "single_turn_sys": {
+        "conversations": [
+            {"from": "system", "value": "lorem"},
+            {"from": "human", "value": "abc"},
+            {"from": "gpt", "value": "ipsum"},
+        ]
+    },
+    "single_turn_no_sys": {
+        "conversations": [
+            {"from": "human", "value": "abc"},
+            {"from": "gpt", "value": "ipsum"},
+        ]
+    },
+    "multi_turn_no_sys": {
+        "conversations": [
+            {"from": "human", "value": "abc"},
+            {"from": "gpt", "value": "ipsum"},
+            {"from": "human", "value": "123"},
+            {"from": "gpt", "value": "sit"},
+        ]
+    },
+}
+
+
+def prompt_strat(conversation, tokenizer):
+    "Helper function to create a prompt strategy for testing."
+    prompter = ShareGPTPrompterV2(conversation=conversation)
+    return ShareGPTPromptTokenizingStrategy(
+        prompter,
+        tokenizer,
+        False,
+        2048,
+    )
 
 
 class TestPromptTokenizationStrategies(unittest.TestCase):
@@ -114,6 +164,70 @@ class TestPromptTokenizationStrategies(unittest.TestCase):
                 in self._caplog.records[0].message
             )
 
+    def test_sharegpt_llama(self):
+        "Make sure the sharegpt/llama is tokenized and formatted correctly."
+        strat = prompt_strat("llama-2", self.tokenizer)
+
+        def tokenize(conv):
+            return strat.tokenize_prompt(deepcopy(conv))["input_ids"]
+
+        def decode(ids):
+            return strat.tokenizer.decode(ids)
+
+        # fmt: off
+        # System message, multi-turn conversations
+        mt_ids = tokenize(test_data['multi_turn_sys'])
+        assert decode(mt_ids) == '<s> [INST] <<SYS>>\nlorem\n<</SYS>>\n\nabc [/INST] ipsum</s><s> [INST] 123 [/INST] sit</s>'
+        assert mt_ids == [1, 518, 25580, 29962, 3532, 14816, 29903, 6778, 13, 29880, 3668, 13, 29966, 829, 14816, 29903, 6778, 13, 13, 10736, 518, 29914, 25580, 29962, 23421, 2, 1, 518, 25580, 29962, 29871, 29896, 29906, 29941, 518, 29914, 25580, 29962, 7845, 2]
+
+        # System message, single-turn conversations
+        st_ids = tokenize(test_data['single_turn_sys'])
+        assert decode(st_ids) == '<s> [INST] <<SYS>>\nlorem\n<</SYS>>\n\nabc [/INST] ipsum</s>'
+        assert st_ids == [1, 518, 25580, 29962, 3532, 14816, 29903, 6778, 13, 29880, 3668, 13, 29966, 829, 14816, 29903, 6778, 13, 13, 10736, 518, 29914, 25580, 29962, 23421, 2]
+
+        # No system message, single-turn
+        ns_ids = tokenize(test_data['single_turn_no_sys'])
+        assert decode(ns_ids) == '<s> [INST] abc [/INST] ipsum</s>'
+        assert ns_ids == [1, 518, 25580, 29962, 25638, 518, 29914, 25580, 29962, 23421, 2]
+
+        # No system message, multi-turn
+        ns_mt_ids = tokenize(test_data['multi_turn_no_sys'])
+        assert decode(ns_mt_ids) == '<s> [INST] abc [/INST] ipsum</s><s> [INST] 123 [/INST] sit</s>'
+        assert ns_mt_ids == [1, 518, 25580, 29962, 25638, 518, 29914, 25580, 29962, 23421, 2, 1, 518, 25580, 29962, 29871, 29896, 29906, 29941, 518, 29914, 25580, 29962, 7845, 2]
+        # fmt: on
+
+    def test_sharegpt_mistral(self):
+        "Make sure the sharegpt/mistral is tokenized and formatted correctly."
+        strat = prompt_strat("mistral", self.tokenizer)
+
+        def tokenize(conv):
+            return strat.tokenize_prompt(deepcopy(conv))["input_ids"]
+
+        def decode(ids):
+            return strat.tokenizer.decode(ids)
+
+        # fmt: off
+        # System message, multi-turn conversations
+        mt_ids = tokenize(test_data['multi_turn_sys'])
+        assert decode(mt_ids) == '<s> [INST]  lorem\nabc [/INST] ipsum</s> [INST] 123 [/INST] sit</s>'
+        assert mt_ids == [1, 518, 25580, 29962, 29871, 301, 3668, 13, 10736, 518, 29914, 25580, 29962, 23421, 2, 518, 25580, 29962, 29871, 29896, 29906, 29941, 518, 29914, 25580, 29962, 7845, 2]
+
+        # System message, single-turn conversations
+        st_ids = tokenize(test_data['single_turn_sys'])
+        assert decode(st_ids) == '<s> [INST]  lorem\nabc [/INST] ipsum</s>'
+        assert st_ids == [1, 518, 25580, 29962, 29871, 301, 3668, 13, 10736, 518, 29914, 25580, 29962, 23421, 2]
+
+        # No system message, single-turn
+        ns_ids = tokenize(test_data['single_turn_no_sys'])
+        assert decode(ns_ids) == '<s> [INST] abc [/INST] ipsum</s>'
+        assert ns_ids == [1, 518, 25580, 29962, 25638, 518, 29914, 25580, 29962, 23421, 2]
+
+        # No system message, multi-turn
+        ns_mt_ids = tokenize(test_data['multi_turn_no_sys'])
+        assert decode(ns_mt_ids) == '<s> [INST] abc [/INST] ipsum</s> [INST] 123 [/INST] sit</s>'
+        assert ns_mt_ids == [1, 518, 25580, 29962, 25638, 518, 29914, 25580, 29962, 23421, 2, 518, 25580, 29962, 29871, 29896, 29906, 29941, 518, 29914, 25580, 29962, 7845, 2]
+        # fmt: on
+
     def test_sharegpt_changes_roles(self):
         conversation = {
             "roles": ["USER", "CHARACTER"],
@@ -155,6 +269,23 @@ class TestPromptTokenizationStrategies(unittest.TestCase):
         with self._caplog.at_level(logging.WARNING):
             res = strat.tokenize_prompt(conversation)
             idx = res["input_ids"].index(20255)  # assistant token
+            assert res["labels"][idx] == -100
+
+    def test_glaive_tool_label_ignore(self):
+        conversation = {
+            "system": "SYSTEM: This is a system prompt",
+            "chat": "USER: Can you book a flight for me from New York to London? ASSISTANT: I'm sorry, but I don't have the capability to book flights.  <|endoftext|>",
+        }
+        prompter = ShareGPTPrompterV2()
+        strat = GlaiveShareGPTPromptTokenizingStrategy(
+            prompter,
+            self.tokenizer,
+            False,
+            2048,
+        )
+        with self._caplog.at_level(logging.WARNING):
+            res = strat.tokenize_prompt(conversation)
+            idx = res["input_ids"].index(13566)  # assistant token
             assert res["labels"][idx] == -100
 
     def test_no_sys_prompt(self):
@@ -316,6 +447,58 @@ If a question does not make any sense, or is not factually coherent, explain why
         self.assertEqual(
             hf_tokens, tokenized_conversation["input_ids"][: len(hf_tokens)]
         )
+
+
+class OrpoTokenizationTest(unittest.TestCase):
+    """test case for the ORPO tokenization"""
+
+    def setUp(self) -> None:
+        # pylint: disable=duplicate-code
+        tokenizer = LlamaTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+        tokenizer.add_special_tokens(
+            {
+                "eos_token": AddedToken(
+                    "<|im_end|>", rstrip=False, lstrip=False, normalized=False
+                )
+            }
+        )
+        tokenizer.add_tokens(
+            [
+                AddedToken(
+                    "<|im_start|>", rstrip=False, lstrip=False, normalized=False
+                ),
+            ]
+        )
+        self.tokenizer = tokenizer
+        self.dataset = load_dataset(
+            "argilla/ultrafeedback-binarized-preferences-cleaned", split="train"
+        ).select([0])
+
+    def test_orpo_integration(self):
+        strat = load(
+            self.tokenizer,
+            DictDefault({"train_on_inputs": False}),
+            DictDefault({"chat_template": "chatml"}),
+        )
+        res = strat.tokenize_prompt(self.dataset[0])
+        assert "rejected_input_ids" in res
+        assert "rejected_labels" in res
+        assert "input_ids" in res
+        assert "labels" in res
+        assert "prompt_attention_mask" in res
+
+        assert len(res["rejected_input_ids"]) == len(res["rejected_labels"])
+        assert len(res["input_ids"]) == len(res["labels"])
+        assert len(res["input_ids"]) == len(res["prompt_attention_mask"])
+
+        assert res["rejected_labels"][0] == -100
+        assert res["rejected_input_ids"][-1] == res["rejected_labels"][-1]
+
+        assert res["labels"][0] == -100
+        assert res["input_ids"][-1] == res["labels"][-1]
+
+        assert res["prompt_attention_mask"][0] == 1
+        assert res["prompt_attention_mask"][-1] == 0
 
 
 if __name__ == "__main__":

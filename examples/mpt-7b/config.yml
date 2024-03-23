@@ -1,5 +1,4 @@
 base_model: mosaicml/mpt-7b
-base_model_config: mosaicml/mpt-7b
 tokenizer_type: AutoTokenizer
 trust_remote_code: true  # required for mpt as their model class is not merged into transformers yet
 load_in_8bit: false
@@ -22,19 +21,19 @@ lora_fan_in_fan_out: false
 wandb_project: mpt-alpaca-7b
 wandb_entity:
 wandb_watch:
-wandb_run_id:
+wandb_name:
 wandb_log_model:
 output_dir: ./mpt-alpaca-7b
 gradient_accumulation_steps: 1
 micro_batch_size: 1
-num_epochs: 3
+num_epochs: 4
 optimizer: adamw_bnb_8bit
 torchdistx_path:
 lr_scheduler: cosine
 learning_rate: 0.0000002
 train_on_inputs: false
 group_by_length: false
-bf16: true
+bf16: auto
 tf32: true
 early_stopping_patience:
 resume_from_checkpoint:
@@ -45,8 +44,8 @@ flash_attention:
 gptq_groupsize:
 gptq_model_v1:
 warmup_steps: 20
-eval_steps: 110
-save_steps: 660
+evals_per_epoch: 4
+saves_per_epoch: 1
 debug:
 deepspeed:
 weight_decay: 0.0001
